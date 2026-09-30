@@ -153,8 +153,10 @@ static const Opt k_opts[] = {
      "# uses itself, for its loading screens), 1581, 1428, 1224 or 1020 (the\n"
      "# normal clock). The game's engine was made for 1.5-2 GHz phones: 1785\n"
      "# holds 60 fps in races; lower ones use less battery. The GPU clock is not\n"
-     "# affected; the HOME menu gets the normal clock.",
-     K_CHOICE, "1785,1581,1428,1224,1020"},
+     "# affected; the HOME menu gets the normal clock. system: never touch the\n"
+     "# CPU clock. An overclocking tool (sys-clk...) always comes first: once it\n"
+     "# sets a clock, the game leaves the clock to it.",
+     K_CHOICE, "1785,1581,1428,1224,1020,system"},
     {"performance", "gpu_boost_handheld", "true",
      "In handheld mode, the GPU at 460.8 MHz instead of 384 (a clock the system\n"
      "# offers games; more battery). Docked it runs at 768 MHz either way.",
@@ -376,7 +378,7 @@ void dcr_config_load(void) {
   g_cfg.player2_hud = as_bool(opt_index("multiplayer", "player2_hud"));
   g_cfg.boost = as_bool(opt_index("performance", "boost_cpu_when_loading"));
   {
-    static const int k_mhz[] = {1785, 1581, 1428, 1224, 1020};
+    static const int k_mhz[] = {1785, 1581, 1428, 1224, 1020, 0}; /* 0: system */
     g_cfg.cpu_clock = k_mhz[as_choice(opt_index("performance", "cpu_clock"))];
   }
   g_cfg.gpu_boost = as_bool(opt_index("performance", "gpu_boost_handheld"));

@@ -105,6 +105,8 @@ Graphics: 60 fps, 1080p docked / 720p handheld, anisotropic filtering, the
 engine's batched renderer. The game's engine was built for phones to emulate
 floating-point maths in software; the port runs it on the Switch's FPU and
 sets the CPU to 1785 MHz (config.ini: cpu_clock) so races hold 60 fps.
+Overclocking tools (sys-clk and the like) come first: once one sets a
+clock, the game leaves it alone. cpu_clock = system never touches it.
 
 Settings: sd:/switch/sonic_allstars_nx/config.ini, written on the first start with
 every option explained (steering by stick or motion, auto-accelerate, the

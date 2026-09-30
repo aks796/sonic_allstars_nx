@@ -206,6 +206,14 @@ which were tested on hardware; they do not conflict with the fixes.
   unless the Joy-Con hold type is set to horizontal before it is shown
   (`source/ssr_input.c`).
 
+### Clocks
+
+* The CPU runs at 1785 MHz by default (the clock driver, `source/ssr_perf.c`),
+  restored when the system puts its normal clock back (dock change, sleep).
+  Overclocking tools win: a clock the port did not set, or the normal clock
+  put back three times in 30 s, makes the port leave the CPU clock alone for
+  the rest of the run. `cpu_clock = system` never touches it.
+
 ### Threads and memory
 
 * Horizon does not preempt threads of equal priority on a core; Android
