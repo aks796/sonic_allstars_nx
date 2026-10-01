@@ -24,12 +24,14 @@
  *
  * RUMBLE. javaVibrate(ms), and the races' own (ssr_race.c): HD rumble on the
  * controller in use. MIT.
- */#include <math.h>
+ */
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <switch.h>
 
 #include "dcr_config.h"
+#include "rt_pad.h"
 #include "ssr.h"
 #include "util.h"
 
@@ -214,7 +216,7 @@ void ssr_test_init(void);
 
 /* ============================================================== the frame */
 void ssr_input_init(void) {
-  padConfigureInput(2, HidNpadStyleSet_NpadStandard); /* two players: split screen */
+  rt_pad_setup(RT_PAD_MAX_PLAYERS, 1); /* two players: split screen */
   padInitializeDefault(&g_pad);
   padInitialize(&g_pad2, HidNpadIdType_No2);
   hidInitializeTouchScreen();
@@ -262,47 +264,9 @@ static void rumble_off(void) {
 void ssr_input_rumble(int ms) { ssr_input_rumble_strength(ms, 0.6f); }
 
 /* ---------------------------------------------------------------- the pads */
-/* One Joy-Con alone (split screen hands one to each player), held sideways
- * with its rail up, as the console's games take it: the face button at the
- * right is A, SL / SR are L / R, its + or - is +, a click of its stick ZL;
- * its stick turned with it (the Labyrinth 2 port's mapping). */
-static int is_single(u64 st) {
-  return (st & (HidNpadStyleTag_NpadJoyLeft | HidNpadStyleTag_NpadJoyRight)) &&
-         !(st & (HidNpadStyleTag_NpadHandheld | HidNpadStyleTag_NpadJoyDual | HidNpadStyleTag_NpadFullKey));
-}
-
-static u64 single_buttons(u64 st, u64 b) {
-  u64 o = b & ~(HidNpadButton_A | HidNpadButton_B | HidNpadButton_X | HidNpadButton_Y | HidNpadButton_Up |
-                HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right | HidNpadButton_Minus |
-                HidNpadButton_StickL | HidNpadButton_StickR);
-  if (st & HidNpadStyleTag_NpadJoyLeft) { /* Down at the right, Left below, Up at the left, Right on top */
-    if (b & HidNpadButton_Down) o |= HidNpadButton_A;
-    if (b & HidNpadButton_Left) o |= HidNpadButton_B;
-    if (b & HidNpadButton_Up) o |= HidNpadButton_Y;
-    if (b & HidNpadButton_Right) o |= HidNpadButton_X;
-  } else { /* X at the right, A below, B at the left, Y on top */
-    if (b & HidNpadButton_X) o |= HidNpadButton_A;
-    if (b & HidNpadButton_A) o |= HidNpadButton_B;
-    if (b & HidNpadButton_B) o |= HidNpadButton_Y;
-    if (b & HidNpadButton_Y) o |= HidNpadButton_X;
-  }
-  if (b & (HidNpadButton_LeftSL | HidNpadButton_RightSL)) o |= HidNpadButton_L;
-  if (b & (HidNpadButton_LeftSR | HidNpadButton_RightSR)) o |= HidNpadButton_R;
-  if (b & (HidNpadButton_Minus | HidNpadButton_Plus)) o |= HidNpadButton_Plus;
-  if (b & (HidNpadButton_StickL | HidNpadButton_StickR)) o |= HidNpadButton_ZL;
-  return o;
-}
-
-/* a lone Joy-Con's stick, from its own frame (held upright) to the sideways
- * hold's: the left one turned anticlockwise, the right one clockwise */
-static void sideways(u64 st, float *x, float *y) {
-  const float cx = *x, cy = *y;
-  if (st & HidNpadStyleTag_NpadJoyLeft)
-    *x = -cy, *y = cx;
-  else
-    *x = cy, *y = -cx;
-}
-
+/* One Joy-Con alone (split screen hands one to each player) is held sideways
+ * with its rail up, as the console's games take it: rt_pad.c turns its
+ * buttons and its stick with it (the Labyrinth 2 port's mapping). */
 static u64 swap_ab(u64 b) {
   const u64 ab = HidNpadButton_A | HidNpadButton_B;
   return (b & ~ab) | ((b & HidNpadButton_A) ? HidNpadButton_B : 0) | ((b & HidNpadButton_B) ? HidNpadButton_A : 0);
@@ -313,22 +277,15 @@ static int read_pad(PadState *pad, u64 *prev, SsrPad *out) {
   padUpdate(pad);
   memset(out, 0, sizeof *out);
   const u64 st = padGetStyleSet(pad);
-  const int single = is_single(st);
-  u64 held = padGetButtons(pad);
-  if (single)
-    held = single_buttons(st, held);
+  float sticks[4];
+  u64 held = rt_pad_read(pad, sticks); /* a lone Joy-Con turned sideways */
   if (dcr_config()->swap_ab)
     held = swap_ab(held);
   float tlx = 0, tly = 0;
   ssr_test_pad(pad == &g_pad2, &held, &tlx, &tly);
   out->held = held, out->down = held & ~*prev, out->up = *prev & ~held;
   *prev = held;
-  const int right_alone = single && (st & HidNpadStyleTag_NpadJoyRight);
-  HidAnalogStickState l = padGetStickPos(pad, right_alone ? 1 : 0), r = padGetStickPos(pad, 1);
-  out->lx = (float)l.x / 32767.0f, out->ly = (float)l.y / 32767.0f;
-  out->rx = single ? 0.0f : (float)r.x / 32767.0f, out->ry = single ? 0.0f : (float)r.y / 32767.0f;
-  if (single)
-    sideways(st, &out->lx, &out->ly);
+  out->lx = sticks[0], out->ly = sticks[1], out->rx = sticks[2], out->ry = sticks[3];
   if (tlx != 0 || tly != 0)
     out->lx = tlx, out->ly = tly;
   return st != 0 || (pad == &g_pad2 && ssr_test_p2());
@@ -356,7 +313,7 @@ void ssr_input_split(int on) {
 
 /* The console's controller screen for two players (blocking, as the Switch
  * keyboard); 1 if two are there after it */
-void ssr_boot_system_dialog(int on); /* ssr_boot.c */
+void dcr_applet_busy(int on); /* rt_applet.c: a system screen is up, no frames expected */
 void ssr_clock_resync(void);         /* ssr_patch.c */
 int ssr_input_controllers_2(void) {
   if (ssr_test_active()) /* a scripted run: its own second controller */
@@ -378,11 +335,11 @@ int ssr_input_controllers_2(void) {
   HidNpadJoyHoldType hold = 0;
   hidGetNpadJoyHoldType(&hold);
   const u64 t0 = armGetSystemTick();
-  ssr_boot_system_dialog(1);
+  dcr_applet_busy(1);
   ssr_audio_pause(1); /* (as the Labyrinth 2 port shows it: the sound held) */
   const Result rc = hidLaShowControllerSupport(&info, &arg);
   ssr_audio_pause(0);
-  ssr_boot_system_dialog(0);
+  dcr_applet_busy(0);
   ssr_clock_resync();
   padUpdate(&g_pad);
   const int two = p2_connected();

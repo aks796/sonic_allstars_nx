@@ -3,7 +3,9 @@
 Technical notes on how the 32-bit Android build of Sonic & SEGA All-Stars
 Racing runs on the Switch, what the 32-bit libraries needed, and what may help
 anyone porting another 32-bit game. File and function names refer to this
-repository unless stated otherwise.
+repository unless stated otherwise; `runtime/` is the shared
+[android32](https://github.com/aks796/android32) runtime (commit 81b772b at
+the move), which holds the parts every 32-bit port has in common.
 
 ## The setup in short
 
@@ -22,11 +24,12 @@ repository unless stated otherwise.
 * A 32-bit program cannot be an NRO (hbloader is 64-bit). The launcher,
   `sonic_allstars_nx.nro` (64-bit, devkitA64), carries the NSP in its RomFS
   and installs it as the Atmosphère ExeFS override of the sphaira forwarder
-  it was started from (`launcher/source/main.c`, `source/dcr_exefs.h`).
-  Later NROs update the override in place (`source/dcr_setup.c`).
+  it was started from (`runtime/launcher/`, with this game's data check in
+  `launcher/source/ssr_launcher.c`). Later NROs update the override in place
+  (`runtime/source/dcr_setup.c`).
 * First-run setup and updates show a progress screen on the boot console
   (the game's name, a bar, the current step: `log_console_progress` in
-  `source/util.c`, staged in `source/dcr_setup.c`). A normal start shows
+  `runtime/source/util.c`, staged by `source/ssr_setup_plan.c`). A normal start shows
   nothing. The console is closed for good before EGL takes the window (Mesa
   registers 3 buffer slots, the console 2; the console's third frame after
   Mesa fails with 0x2B59).
@@ -214,11 +217,24 @@ which were tested on hardware; they do not conflict with the fixes.
   put back three times in 30 s, makes the port leave the CPU clock alone for
   the rest of the run. `cpu_clock = system` never touches it.
 
+### HOME and sleep
+
+* libnx leaves applications in `AppletFocusHandlingMode_SuspendHomeSleep`:
+  the system freezes the process for HOME and sleep and sends no focus
+  messages, so the port's onPause/onResume never ran on hardware. It now sets
+  `SuspendHomeSleepNotify` before `appletHook` (`runtime/source/rt_applet.c`;
+  the game's pause and resume are `port_focus_*` in `source/ssr_boot.c`).
+* The monotonic clock skips a freeze by itself: a thread reads it every
+  100 ms, and a reading more than 2 s after the last one counts the gap as
+  time away (`runtime/source/bionic_time.c`). Wall-clock time stays real. The frame
+  clock (display refreshes) already counts any stall over 500 ms as one frame.
+* HOME no longer disconnects a split-screen LAN game (both copies are local).
+
 ### Threads and memory
 
 * Horizon does not preempt threads of equal priority on a core; Android
   does. Guest threads run at priority 59 on cores 0-2, where Mesosphère
-  time-slices every 10 ms (`source/dcr_sched.c`).
+  time-slices every 10 ms (`runtime/source/dcr_sched.c`).
 * The heap is 1 GiB (the 32-bit heap region).
 
 ### Split screen
@@ -241,7 +257,8 @@ which were tested on hardware; they do not conflict with the fixes.
 
 * In earlier builds the SD folder was `sd:/switch/sonicracing/` and the NRO
   `SonicRacing.nro`. The first start moves the old folder's files into
-  `sd:/switch/sonic_allstars_nx/` (`source/dcr_migrate.h`).
+  `sd:/switch/sonic_allstars_nx/` (`runtime/source/rt_migrate.c`;
+  a folder both have, such as `data/`, is merged, never overwriting).
 * The program inside the NRO keeps the name `sonicracing_nx.nsp`, so that
   installed older builds still recognise a newer NRO as an update.
 

@@ -15,17 +15,12 @@
  * by the engine). Here a music thread decodes the MP3 straight out of the
  * APK (FFmpeg, ssr_media.c), resamples it to 48 kHz and fills a second ring.
  *
- * The mixer thread adds the two rings (and the intro movie's sound, while it
- * plays) into 1024-frame buffers of 48 kHz stereo and keeps three queued on
- * audout: its blocking is the clock of both. HOME holds everything where it
- * is (the writers block on their full rings); closing makes writes return at
- * once, since the engine's shutdown may wait for its sound thread.
- *
- * audout's buffer descriptor is an IPC structure with 64-bit fields for every
- * client, while libnx32's AudioOutBuffer has 32-bit pointers, so append and
- * get-released are issued with the right layout here (from the Crossy Road,
- * PvZ and Labyrinth ports, where the self-test below proved it on hardware).
- * MIT.
+ * The mixer thread (the runtime's pump, rt_audout.c) adds the two rings (and
+ * the intro movie's sound, while it plays) into 1024-frame buffers of 48 kHz
+ * stereo and keeps three queued on audout: its blocking is the clock of
+ * both. HOME holds everything where it is (the writers block on their full
+ * rings); closing makes writes return at once, since the engine's shutdown
+ * may wait for its sound thread. MIT.
  */
 #include <malloc.h>
 #include <math.h>
@@ -36,151 +31,21 @@
 
 #include "dcr_config.h"
 #include "jni.h"
+#include "rt_audout.h"
 #include "ssr.h"
 #include "util.h"
 
 /* ================================================================ audout */
-typedef struct {
-  u64 next, buffer, buffer_size, data_size, data_offset;
-} AoBuf;
-_Static_assert(sizeof(AoBuf) == 0x28, "audout buffer descriptor");
+/* The output is the runtime's (rt_audout.c): three buffers of
+ * RT_AUDOUT_FRAMES (1024) frames of 48 kHz stereo s16, its blocking submit
+ * the clock of both rings; its pump thread runs mix() below. */
+#define FRAMES_PER_BUF RT_AUDOUT_FRAMES
 
-#define NBUF 3
-#define FRAMES_PER_BUF 1024 /* 1024 * 4 bytes = one 0x1000 page */
-#define BUF_BYTES (FRAMES_PER_BUF * 4)
-
-static AoBuf g_bufs[NBUF] __attribute__((aligned(16)));
-static int16_t *g_pcm[NBUF];
-static int g_queued[NBUF];
-static int g_ao_ready;
-static u32 g_out_rate = 48000;
-
-static Result ao_append(AoBuf *b) {
-  u64 tag = (u64)(uintptr_t)b;
-  const bool auto_ = hosversionAtLeast(3, 0, 0);
-  return serviceDispatchIn(audoutGetServiceSession_AudioOut(), auto_ ? 7 : 3, tag,
-                           .buffer_attrs = {auto_ ? (SfBufferAttr_HipcAutoSelect | SfBufferAttr_In)
-                                                  : (SfBufferAttr_HipcMapAlias | SfBufferAttr_In)},
-                           .buffers = {{b, sizeof(*b)}});
-}
-
-static Result ao_released(u64 *tags, u32 max, u32 *count) {
-  const bool auto_ = hosversionAtLeast(3, 0, 0);
-  return serviceDispatchOut(audoutGetServiceSession_AudioOut(), auto_ ? 8 : 5, *count,
-                            .buffer_attrs = {auto_ ? (SfBufferAttr_HipcAutoSelect | SfBufferAttr_Out)
-                                                   : (SfBufferAttr_HipcMapAlias | SfBufferAttr_Out)},
-                            .buffers = {{tags, max * sizeof(u64)}});
-}
-
-static void reap(void) {
-  u64 tags[NBUF] = {0};
-  u32 n = 0;
-  if (R_SUCCEEDED(ao_released(tags, NBUF, &n)))
-    for (u32 k = 0; k < n && k < NBUF; k++)
-      for (int i = 0; i < NBUF; i++)
-        if (tags[k] == (u64)(uintptr_t)&g_bufs[i])
-          g_queued[i] = 0;
-}
-
-static int free_buffer(void) {
-  for (int pass = 0; pass < 2; pass++) {
-    for (int i = 0; i < NBUF; i++)
-      if (!g_queued[i])
-        return i;
-    reap();
-  }
-  return -1;
-}
-
-static int ao_open(void) {
-  if (g_ao_ready)
-    return 0;
-  Result rc = audoutInitialize();
-  if (R_FAILED(rc)) {
-    debugPrintf("[audio] audoutInitialize failed 0x%x\n", rc);
-    return -1;
-  }
-  rc = audoutStartAudioOut();
-  if (R_FAILED(rc)) {
-    debugPrintf("[audio] audoutStartAudioOut failed 0x%x\n", rc);
-    audoutExit();
-    return -1;
-  }
-  g_out_rate = audoutGetSampleRate() ? audoutGetSampleRate() : 48000;
-  for (int i = 0; i < NBUF; i++) {
-    g_pcm[i] = memalign(0x1000, BUF_BYTES);
-    if (!g_pcm[i])
-      return -1;
-    memset(g_pcm[i], 0, BUF_BYTES);
-    g_bufs[i].buffer = (u64)(uintptr_t)g_pcm[i];
-    g_bufs[i].buffer_size = BUF_BYTES;
-    g_bufs[i].data_size = BUF_BYTES;
-  }
-  g_ao_ready = 1;
-  debugPrintf("[audio] audout open: %u Hz, %u ch\n", (unsigned)g_out_rate, (unsigned)audoutGetChannelCount());
-  return 0;
-}
-
-static unsigned long g_underruns, g_append_fails, g_dropped, g_submits, g_mixes;
 static volatile int g_stop_thread, g_paused, g_closing;
 
-unsigned long ssr_audio_mixes(void) { return g_mixes; }
-
-/* Queue one full buffer of 48 kHz stereo s16; blocks while all are in use. */
-static void submit(const int16_t *frames) {
-  int i;
-  reap();
-  int queued = 0;
-  for (int k = 0; k < NBUF; k++)
-    queued += g_queued[k];
-  if (!queued && g_submits > NBUF)
-    g_underruns++;
-  while ((i = free_buffer()) < 0 && !g_stop_thread)
-    svcSleepThread(2000000ll);
-  if (i < 0)
-    return;
-  memcpy(g_pcm[i], frames, BUF_BYTES);
-  armDCacheFlush(g_pcm[i], BUF_BYTES);
-  g_bufs[i].data_size = BUF_BYTES;
-  g_bufs[i].data_offset = 0;
-  for (int attempt = 0; attempt < 5; attempt++) {
-    Result rc = ao_append(&g_bufs[i]);
-    if (R_SUCCEEDED(rc)) {
-      g_queued[i] = 1;
-      g_submits++;
-      return;
-    }
-    if (g_append_fails++ < 3)
-      debugPrintf("[audio] audout append failed 0x%x (retrying)\n", (unsigned)rc);
-    svcSleepThread(2000000ll);
-    reap();
-  }
-  g_dropped++;
-}
-
-/* Self-check of the descriptor layout, before the game runs: two buffers of
- * silence must come back from the audio server. */
-void ssr_audio_selftest(void) {
-  if (ao_open() != 0)
-    return;
-  static int16_t silence[FRAMES_PER_BUF * 2];
-  submit(silence);
-  submit(silence);
-  u64 t0 = armGetSystemTick();
-  int back = 0;
-  while (armTicksToNs(armGetSystemTick() - t0) < 500000000ull) {
-    reap();
-    back = 0;
-    for (int i = 0; i < NBUF; i++)
-      back += !g_queued[i];
-    if (back == NBUF)
-      break;
-    svcSleepThread(5000000ll);
-  }
-  debugPrintf("[audio] self-test: %s (%d/%d buffers returned in %llu ms)\n",
-              back == NBUF ? "OK" : "FAILED -- buffer descriptor not accepted", back, NBUF,
-              (unsigned long long)(armTicksToNs(armGetSystemTick() - t0) / 1000000ull));
-}
+/* the watchdog's "is the sound alive": buffers mixed */
+unsigned long ssr_audio_mixes(void) { return rt_audout_pump_blocks(); }
+uint32_t ssr_audio_writes(void) { return (uint32_t)rt_audout_pump_blocks(); }
 
 /* ================================================================ rings */
 /* 48 kHz stereo s16 frames: one writer (it blocks while full), one reader
@@ -259,10 +124,10 @@ typedef struct {
 } Resampler;
 
 /* in: `frames` interleaved frames of `ch` channels (s16), at `rate`;
- * out: stereo at g_out_rate, appended to *out_n (cap in frames). */
+ * out: stereo at the device's rate (rt_audout_rate), appended to *out_n (cap in frames). */
 static void resample(Resampler *rs, const int16_t *in, int frames, int ch, int rate, int16_t *out, int *out_n,
                      int cap) {
-  const double step = (double)rate / (double)g_out_rate;
+  const double step = (double)rate / (double)rt_audout_rate();
   while (rs->pos < (double)(frames - 1) && *out_n < cap) {
     int i0 = (int)floor(rs->pos);
     double t = rs->pos - (double)i0;
@@ -652,41 +517,36 @@ static void music_thread(void *arg) {
 }
 
 /* ============================================================ the mixer */
-static Thread g_thread, g_music_thread;
+static Thread g_music_thread;
 
-static void audio_thread(void *arg) {
-  (void)arg;
+/* the pump's fill (rt_audout.c): both rings and the movie's sound, one buffer */
+static void mix(int16_t *out, int frames, void *ud) {
+  (void)ud;
   static int32_t acc[FRAMES_PER_BUF * 2];
-  static int16_t out[FRAMES_PER_BUF * 2];
-  debugPrintf("[audio] mixer thread running (%u Hz)\n", (unsigned)g_out_rate);
-  while (!g_stop_thread) {
-    if (g_paused) {
-      svcSleepThread(10000000ll);
-      continue;
+  memset(acc, 0, sizeof acc);
+  const DcrConfig *c = dcr_config();
+  int mu_gain = g_mu.paused ? 0 : (int)(256.0f * c->music_volume * g_mu.vol);
+  int fx_queued = 0;
+  mutexLock(&g_tracks_lock);
+  for (int i = 0; i < MAX_TRACKS; i++)
+    if (g_tracks[i]) {
+      ring_mix(&g_tracks[i]->ring, acc, frames, (int)(256.0f * c->sfx_volume * g_tracks[i]->gain));
+      fx_queued += ring_count(&g_tracks[i]->ring);
     }
-    memset(acc, 0, sizeof acc);
-    const DcrConfig *c = dcr_config();
-    int mu_gain = g_mu.paused ? 0 : (int)(256.0f * c->music_volume * g_mu.vol);
-    int fx_queued = 0;
-    mutexLock(&g_tracks_lock);
-    for (int i = 0; i < MAX_TRACKS; i++)
-      if (g_tracks[i]) {
-        ring_mix(&g_tracks[i]->ring, acc, FRAMES_PER_BUF, (int)(256.0f * c->sfx_volume * g_tracks[i]->gain));
-        fx_queued += ring_count(&g_tracks[i]->ring);
-      }
-    mutexUnlock(&g_tracks_lock);
-    if (mu_gain)
-      ring_mix(&g_music_ring, acc, FRAMES_PER_BUF, mu_gain);
-    for (int i = 0; i < FRAMES_PER_BUF * 2; i++) {
-      int32_t x = acc[i];
-      out[i] = (int16_t)(x < -32768 ? -32768 : x > 32767 ? 32767 : x);
-    }
-    ssr_video_mix(out, FRAMES_PER_BUF, (int)g_out_rate);
-    g_mixes++;
-    submit(out);
-    if (g_mixes % 3000 == 0)
-      debugPrintf("[audio] %lu mixes; %lu underruns, %lu failed submits (%lu dropped); queued fx %d, music %d\n",
-                  g_mixes, g_underruns, g_append_fails, g_dropped, fx_queued, ring_count(&g_music_ring));
+  mutexUnlock(&g_tracks_lock);
+  if (mu_gain)
+    ring_mix(&g_music_ring, acc, frames, mu_gain);
+  for (int i = 0; i < frames * 2; i++) {
+    int32_t x = acc[i];
+    out[i] = (int16_t)(x < -32768 ? -32768 : x > 32767 ? 32767 : x);
+  }
+  ssr_video_mix(out, frames, (int)rt_audout_rate());
+  const unsigned long mixes = rt_audout_pump_blocks() + 1; /* this one */
+  if (mixes % 3000 == 0) {
+    RtAudoutStats st;
+    rt_audout_stats(&st);
+    debugPrintf("[audio] %lu mixes; %lu underruns, %lu failed submits (%lu dropped); queued fx %d, music %d\n",
+                mixes, st.underruns, st.append_fails, st.dropped, fx_queued, ring_count(&g_music_ring));
   }
 }
 
@@ -696,19 +556,19 @@ void ssr_audio_init(void) {
   /* each track's ring is its own (at_init); the music's queues more */
   mutexInit(&g_tracks_lock);
   ring_init(&g_music_ring, 8192);
-  if (ao_open() != 0)
-    return;
   /* priority 0x28: above the game's threads (59 in libnx terms is lower), so
    * the mixer keeps up; the music decoder just below it */
-  if (R_FAILED(threadCreate(&g_thread, audio_thread, NULL, NULL, 0x10000, 0x28, 2)) ||
-      R_FAILED(threadStart(&g_thread)))
-    debugPrintf("[audio] could not start the mixer thread\n");
+  if (rt_audout_pump_start(mix, NULL, 0x28, 2) != 0)
+    return;
   if (R_FAILED(threadCreate(&g_music_thread, music_thread, NULL, NULL, 0x20000, 0x2A, 2)) ||
       R_FAILED(threadStart(&g_music_thread)))
     debugPrintf("[audio] could not start the music thread\n");
 }
 
-void ssr_audio_pause(int paused) { g_paused = paused; }
+void ssr_audio_pause(int paused) {
+  g_paused = paused; /* the writers hold */
+  rt_audout_pause(paused); /* the mixer holds */
+}
 
 void ssr_audio_close(void) {
   g_closing = 1;

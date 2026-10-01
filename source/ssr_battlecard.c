@@ -29,7 +29,7 @@
 #include "ssr_pack.h"
 #include "util.h"
 
-const char *dcr_game_root(void); /* main.c */
+const char *dcr_game_root(void); /* dcr_path.c */
 
 #define STAR_NAME "netmenu_cards.star"
 #define SC_SOLO_CARDS 0x131fb476u

@@ -44,7 +44,7 @@
 #include "ssr.h"
 #include "util.h"
 
-const char *dcr_game_root(void); /* main.c */
+const char *dcr_game_root(void); /* dcr_path.c */
 
 #define CARD_SPRITE 0x5cec17beu /* SPLIT SCREEN (the multiplayer submenu's card) */
 #define CARD_FILE "fe_mainmenu"

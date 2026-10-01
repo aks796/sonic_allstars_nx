@@ -15,26 +15,23 @@
  * on the Linux kernel's user helpers: literals 0xffff0fc0 (__kuser_cmpxchg,
  * 43 of them) and 0xffff0fa0 (__kuser_memory_barrier, 4), loaded and called
  * with blx. Horizon has nothing at 0xffff0000: the literals are pointed at
- * kuser.S before the code is sealed (as the PvZ and Asphalt ports do).
+ * kuser.S before the code is sealed (so_util.c: so_fix_kuser_helpers).
  *
- * The engine never writes its own code, so the runtime's code-space hooks
- * (codespace.h: PvZ's mod patches its engine at run time) answer "not ours".
- * MIT.
+ * The engine never writes its own code: the runtime's code-space hooks
+ * (codespace.h) keep their defaults. MIT.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <switch.h>
 
-#include "codespace.h"
 #include "config.h"
-#include "dcr_net.h"
+#include "bionic_pthread.h"
+#include "dcr_path.h"
 #include "error.h"
 #include "imports.h"
 #include "ssr.h"
 #include "util.h"
-
-const char *dcr_game_root(void); /* main.c */
 
 so_module g_mod_game;
 
@@ -42,8 +39,8 @@ void *ssr_native(const char *symbol) { return (void *)so_try_find_addr_rx(&g_mod
 
 /* Which copy of the engine runs on this thread: 0, or 1 (split screen's
  * second). Set by the thread that calls into a copy; threads a copy starts
- * inherit it (bionic_pthread.c). The JNI side (audio tracks, text) tells the
- * copies apart by it. */
+ * inherit it (bionic_pthread.c: port_thread_tag_*, below). The JNI side
+ * (audio tracks, text) tells the copies apart by it. */
 static __thread int g_engine_tls;
 int ssr_engine_current(void) { return g_engine_tls; }
 void ssr_engine_set_current(int engine) { g_engine_tls = engine; }
@@ -69,49 +66,26 @@ void *ssr_addr_in(int engine, uint32_t vaddr, uint32_t expect) {
   return *(const uint32_t *)a == expect ? a : NULL;
 }
 
-/* ----------------------------------------------------- kernel helpers */
-void dcr_kuser_cmpxchg(void);
-void dcr_kuser_memory_barrier(void);
-
-static void fix_kuser_helpers(so_module *m) {
-  int cmpxchg = 0, barrier = 0;
-  for (int i = 0; i < m->phnum; i++) {
-    const Elf32_Phdr *ph = &m->phdr[i];
-    if (ph->p_type != PT_LOAD || !(ph->p_flags & PF_X))
-      continue;
-    uint32_t *w = (uint32_t *)((uintptr_t)((uint8_t *)m->load_base + ph->p_vaddr + 3) & ~3u);
-    size_t nw = ph->p_filesz / 4;
-    for (size_t k = 0; k < nw; k++) {
-      if (w[k] == 0xffff0fc0u) {
-        w[k] = (uint32_t)(uintptr_t)dcr_kuser_cmpxchg;
-        cmpxchg++;
-      } else if (w[k] == 0xffff0fa0u) {
-        w[k] = (uint32_t)(uintptr_t)dcr_kuser_memory_barrier;
-        barrier++;
-      }
-    }
-  }
-  debugPrintf("[boot] %s: kernel user helpers -> kuser.S (%d cmpxchg, %d barrier)%s\n", m->base_name, cmpxchg, barrier,
-              cmpxchg == 43 && barrier == 4 ? "" : " -- not the counts of 1.0.1's library");
-}
-
 /* ------------------------------------------------------------- loading */
 static int load_into(so_module *m) {
   char path[512];
   snprintf(path, sizeof path, "%s/%s", dcr_game_root(), SSR_LIB_GAME);
   u64 t0 = armGetSystemTick();
-  int rc = so_load(m, path, NULL, SO_REGION_BYTES);
+  int rc = so_load(m, path, NULL, PORT_SO_REGION_BYTES);
   if (rc < 0) {
     const char *why = rc == -1 ? "cannot open it, or it is not a 32-bit ARM ELF"
                     : rc == -2 ? "out of memory"
-                    : rc == -3 ? "larger than SO_REGION_BYTES"
+                    : rc == -3 ? "larger than PORT_SO_REGION_BYTES"
                     : rc == -4 ? "too many program headers" : "?";
     debugPrintf("[boot] so_load(%s) failed rc=%d: %s\n", path, rc, why);
     return -1;
   }
   so_relocate(m);
   int missing = so_resolve(m, dcr_imports, dcr_imports_count, 1);
-  fix_kuser_helpers(m);
+  /* the kernel user helpers -> kuser.S (so_util.c logs the counts) */
+  if (so_fix_kuser_helpers(m) != 47)
+    debugPrintf("[boot] %s: kernel user helpers -- not the counts of 1.0.1's library (43 cmpxchg, 4 barrier)\n",
+                m->base_name);
   void ssr_patch_engine(so_module * m); /* ssr_patch.c: VFP maths, GL bookkeeping, the clock */
   ssr_patch_engine(m);
   so_finalize(m);
@@ -161,18 +135,6 @@ void ssr_run_constructors(void) {
 }
 
 /* ------------------------------------------------ the shared runtime's hooks
- * codespace.h: code written at run time by the game's own modules (PvZ's mod
- * did that); this engine never does, so every request is the plain shim's. */
-volatile int g_cs_armed;
-void *cs_mmap(size_t len, int prot, const void *caller) { return NULL; }
-int cs_munmap(void *addr, size_t len) { return 0; }
-int cs_mprotect(void *addr, size_t len, int prot, const void *caller) {
-  /* The engine's own pages: never a real change (text stays RX, data RW). */
-  return so_find_module_by_addr(addr) != NULL;
-}
-int cs_write(void *dst, const void *src, size_t n, int c, int kind) { return 0; }
-
-/* exc_handler.c: no trampoline pool here. */
-int dcr_in_code_pool(const void *p) { return 0; }
-
-/* dcr_net.h: ssr_net.c (the LOCAL multiplayer's UDP between the engine's copies) */
+ * bionic_pthread.c: a new thread is its creator's copy's. */
+uintptr_t port_thread_tag_for_new(void) { return (uintptr_t)ssr_engine_current(); }
+void port_thread_tag_enter(uintptr_t t) { ssr_engine_set_current((int)t); }

@@ -1,19 +1,20 @@
 build/
-launcher/build/
-launcher/romfs/*.nsp
-launcher/romfs/*.build
-*.elf
 *.nsp
-*.nso
-*.npdm
-*.nro
-*.nacp
+*.elf
 *.build
-*.map
+launcher/build/
+launcher/romfs/
+launcher/*.nro
+launcher/*.nacp
+launcher/*.elf
 SD_CARD/
 SD_CARD.zip
 debug/
-portlibs32/include/
-portlibs32/lib/
 .DS_Store
+github_repo/
 resources/xbox360/
+
+# the android32 runtime: a symlink while developing (a submodule in the GitHub export)
+/runtime
+# development links in this copy
+/portlibs32

@@ -32,7 +32,7 @@
 #include "ssr.h"
 #include "util.h"
 
-const char *dcr_game_root(void); /* main.c */
+const char *dcr_game_root(void); /* dcr_path.c */
 int ssr_gfx_download_bg_texture(void); /* ssr_gfx.c */
 int ssr_boot_movie_stopped(void);      /* ssr_boot.c */
 
@@ -202,7 +202,7 @@ H(h_vibrate) {
   return jv_none();
 }
 H(h_osVersion) { return jv_l(jni_str("4.1.2")); }
-H(h_package) { return jv_l(jni_str(DCR_PACKAGE)); }
+H(h_package) { return jv_l(jni_str(PORT_PACKAGE)); }
 H(h_appVersion) { return jv_l(jni_str(SSR_VERSION)); }
 H(h_movieStopped) { return jv_z(ssr_engine_current() ? 1 : ssr_boot_movie_stopped()); }
 H(h_downloadBg) { return jv_i(ssr_gfx_download_bg_texture()); }
@@ -422,8 +422,7 @@ static int console_language(void) {
 }
 
 void ssr_java_init(void) {
-  jni_init();
-  g_jni_log = dcr_config()->log_jni;
+  jni_init(); /* g_jni_log: [debug] log_java_calls (jni_core.c) */
   g_lang = dcr_config()->language >= 0 ? dcr_config()->language : console_language();
   static const char *const names[] = {"English (UK)", "French", "Italian", "German", "Spanish", "Japanese",
                                       "English (US)"};

@@ -32,7 +32,7 @@
 #include "ssr.h"
 #include "util.h"
 
-const char *dcr_game_root(void);                  /* main.c */
+const char *dcr_game_root(void);                  /* dcr_path.c */
 void dcr_gl_request_capture_named(const char *n); /* gl_mesa.c */
 extern void (*dcr_log_tap)(const char *line);     /* util.c */
 const char *ssr_menu_screen(void);                /* ssr_menu.c */

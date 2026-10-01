@@ -117,6 +117,15 @@ void ssr_cpu_boost(int on) {
   cpu_apply(0);
 }
 
+/* dcr_boost.c: with the clock driver, a boost is the CPU clock alone (the GPU
+ * untouched), and nothing once a tool has the clock */
+int port_cpu_boost_set(int on) {
+  if (!ssr_cpu_managed())
+    return -1;
+  ssr_cpu_boost(on);
+  return 1;
+}
+
 /* ssr_boot.c's focus handling: the HOME menu or sleep gets the normal clock */
 void ssr_perf_focus(int focused) {
   if (!g_clk_kind || g_clk_yield || g_clk_focus == focused)
@@ -202,7 +211,8 @@ static u32 cpu_mhz_now(void) {
 #define CFG_HANDHELD_GPU_460 0x92220007u
 static int g_apm;
 
-/* main(), once config.ini is read: before the start-up boost */
+/* main(), once config.ini is read: before the start-up boost
+ * (dcr_boost_launch_begin -> port_perf_clocks) */
 void ssr_perf_clocks(void) {
   static int done;
   if (done++)
@@ -221,6 +231,8 @@ void ssr_perf_clocks(void) {
   }
   cpu_start(); /* after the configuration, which sets the CPU's clock too */
 }
+
+void port_perf_clocks(void) { ssr_perf_clocks(); }
 
 static const char *clocks_now(void) {
   static char s[80];

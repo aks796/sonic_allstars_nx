@@ -68,6 +68,8 @@ controllers: one Joy-Con each, held sideways, works.
 
 ### Requirements
 
+* [android32](https://github.com/aks796/android32), the runtime shared by the
+  32-bit ports, at `runtime/` (a git submodule: `git submodule update --init`)
 * Docker
 * The vita2hos devcontainer image (devkitARM, for the 32-bit program)
 * [libnx32](https://github.com/aks796/libnx32) 4.12.0 or newer, the 32-bit

@@ -45,11 +45,11 @@
 #include "ssr_split_priv.h"
 #include "util.h"
 
-const char *dcr_game_root(void);                /* main.c */
+const char *dcr_game_root(void);                /* dcr_path.c */
 void ssr_patch_after_make_model_in(int engine); /* ssr_patch.c */
 void ssr_patch_after_init_in(int engine);
 void ssr_clock_resync(void);
-void ssr_boot_system_dialog(int on); /* ssr_boot.c: a long wait, not a hang */
+void dcr_applet_busy(int on); /* rt_applet.c: a system screen is up, no frames expected */
 void ssr_xcard_frame(void *loadset); /* ssr_xcard.c */
 int ssr_patch_jump(const char *sym, uint32_t expect, void *dst); /* ssr_patch.c, at load */
 int ssr_patch_engine_index(void);
@@ -766,7 +766,7 @@ static int boot2(void) {
       N2.screen_size_init(ENV, act);
     N2.cfg(ENV, act, 6, 1);
     const SsrPack *p = ssr_pack();
-    N2.set_file_system(ENV, act, jni_str(p->path), jni_str("/data/data/" DCR_PACKAGE "/p2"), (jint)p->pack_off,
+    N2.set_file_system(ENV, act, jni_str(p->path), jni_str("/data/data/" PORT_PACKAGE "/p2"), (jint)p->pack_off,
                        (jint)p->pack_len);
     N2.cfg(ENV, act, 5, ssr_language());
     if (ssr_gfx_use(1, 1) != 0) {
@@ -1041,9 +1041,9 @@ static void session_frame(void) {
         return;
       }
       if (S.e2 == 0) {
-        ssr_boot_system_dialog(1);
+        dcr_applet_busy(1);
         const int rc = boot2();
-        ssr_boot_system_dialog(0);
+        dcr_applet_busy(0);
         ssr_clock_resync(); /* the time it took is no game time */
         S.e2 = rc == 0 ? 1 : -1;
         if (rc != 0)

@@ -62,11 +62,11 @@ int ssr_text_tex(void);
 void ssr_text_terminate(void);
 
 /* ---------------------------------------------------------------- audio (ssr_audio.c) */
-void ssr_audio_selftest(void);
 void ssr_audio_init(void);
 void ssr_audio_pause(int paused);     /* HOME: everything holds */
 void ssr_audio_close(void);           /* closing: writes return at once */
 unsigned long ssr_audio_mixes(void);
+uint32_t ssr_audio_writes(void); /* the same, for the watchdog */
 /* The Java AudioTrack OpenAL Soft's Android backend plays through: its
  * methods' handlers (listed in ssr_java.c's table). */
 #define SSR_AT_HANDLER(fn) jvalue ssr_##fn(JObj *self, const jvalue *a, const JMethod *m)

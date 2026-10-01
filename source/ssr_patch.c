@@ -573,8 +573,8 @@ static void wrap_texparami(GLenum target, GLenum pname, GLint param) {
   set_aniso(target, pname, param);
 }
 
-/* the wrapper for a GL name, or 0 */
-uintptr_t ssr_gl_wrap(const char *name, uintptr_t real) {
+/* the wrapper for a GL name, or 0 (gl_mesa.c asks for each gl* lookup) */
+uintptr_t port_gl_wrap(const char *name, uintptr_t real) {
   if (!real)
     return 0;
   if (!strcmp(name, "glTexParameterf")) {

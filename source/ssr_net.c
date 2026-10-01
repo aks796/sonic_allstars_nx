@@ -70,11 +70,11 @@ static Sock *sock_of(int fd) {
   return i >= 0 && i < NET_MAX && g_s[i].used ? &g_s[i] : NULL;
 }
 
-int dcr_net_owns(int fd) { return sock_of(fd) != NULL; }
+int port_net_owns(int fd) { return sock_of(fd) != NULL; }
 
 /* bionic_net.c's socket(): a UDP/IPv4 socket is ours; -1 lets it make its
  * offline one */
-int ssr_net_socket(int domain, int type, int proto) {
+int port_net_socket(int domain, int type, int proto) {
   if (domain != 2 /* AF_INET */ || (type & 0xf) != 2 /* SOCK_DGRAM */)
     return -1;
   mutexLock(&g_lock);
@@ -92,7 +92,7 @@ int ssr_net_socket(int domain, int type, int proto) {
   return fd >= 0 ? fd : -2; /* -2: ours, but full */
 }
 
-int ssr_net_bind(int fd, const void *addr, unsigned len) {
+int port_net_bind(int fd, const void *addr, unsigned len) {
   Sock *s = sock_of(fd);
   if (!s)
     return -1;
@@ -123,7 +123,7 @@ static void push(Sock *s, const uint8_t from[4], uint16_t port_be, const void *b
   s->tail++;
 }
 
-ssize_t ssr_net_sendto(int fd, const void *b, size_t n, int flags, const void *addr, unsigned alen) {
+ssize_t port_net_sendto(int fd, const void *b, size_t n, int flags, const void *addr, unsigned alen) {
   Sock *s = sock_of(fd);
   if (!s || !addr || alen < 8) {
     b_set_errno(L_ENETUNREACH);
@@ -151,7 +151,7 @@ ssize_t ssr_net_sendto(int fd, const void *b, size_t n, int flags, const void *a
   return (ssize_t)n;
 }
 
-ssize_t ssr_net_recvfrom(int fd, void *b, size_t n, int flags, void *addr, unsigned *alen) {
+ssize_t port_net_recvfrom(int fd, void *b, size_t n, int flags, void *addr, unsigned *alen) {
   Sock *s = sock_of(fd);
   if (!s) {
     b_set_errno(L_EBADF);
@@ -181,7 +181,7 @@ ssize_t ssr_net_recvfrom(int fd, void *b, size_t n, int flags, void *addr, unsig
   return (ssize_t)k;
 }
 
-int dcr_net_close(int fd) {
+int port_net_close(int fd) {
   Sock *s = sock_of(fd);
   if (!s)
     return -1;
@@ -197,7 +197,7 @@ int dcr_net_close(int fd) {
   return 0;
 }
 
-int dcr_net_fcntl(int fd, int cmd, long arg) {
+int port_net_fcntl(int fd, int cmd, long arg) {
   Sock *s = sock_of(fd);
   if (!s)
     return -1;
@@ -208,9 +208,9 @@ int dcr_net_fcntl(int fd, int cmd, long arg) {
   return 0;
 }
 
-int dcr_net_ioctl(int fd, unsigned long req, void *arg) { return 0; }
+int port_net_ioctl(int fd, unsigned long req, void *arg) { return 0; }
 
-short dcr_net_ready(int fd, short events) {
+short port_net_ready(int fd, short events) {
   Sock *s = sock_of(fd);
   if (!s)
     return 0;

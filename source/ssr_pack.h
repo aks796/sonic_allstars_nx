@@ -17,8 +17,9 @@
  *   - an APK that carries the data as assets/packres.png and
  *     assets/intro_full.m4v (the single-APK build of source/tools/build.py).
  * Files are told apart by what is in them, never by their names: the APK is
- * the zip that holds lib/armeabi/libssasr.so (ssr_find_apk), the data the
- * file that holds packres.png (ssr_find_data).
+ * the zip that holds lib/armeabi/libssasr.so (the runtime's APK search,
+ * port_config.h's PORT_APK_ROLES), the data the file that holds packres.png
+ * (ssr_find_data).
  * Each is a zip whose entries are looked up through its central directory
  * (the same walk as the APK expansion library's ZipResourceFile: local header
  * offset + 30 + name length + extra length), recursing once into a stored
@@ -197,30 +198,6 @@ static inline int ssr_pack_probe(const char *path, SsrPack *out) {
   return 0;
 }
 
-/* ---------------------------------------------------------------- the APK */
-/* The game's APK, whatever it is called: a zip holding its library,
- * lib/armeabi/libssasr.so (0 if it is one). */
-static int ssr_apk_entry(const char *name, int method, uint64_t data, uint32_t comp, uint32_t len, void *ctx) {
-  (void)method, (void)data, (void)comp, (void)len;
-  if (!strcmp(name, "lib/armeabi/libssasr.so")) {
-    *(int *)ctx = 1;
-    return 1;
-  }
-  return 0;
-}
-
-static inline int ssr_apk_probe(const char *path) {
-  FILE *f = fopen(path, "rb");
-  if (!f)
-    return -1;
-  fseeko(f, 0, SEEK_END);
-  const uint64_t size = (uint64_t)ftello(f);
-  int found = 0;
-  const int rc = ssr_zip_walk(f, 0, size, ssr_apk_entry, &found);
-  fclose(f);
-  return rc == 0 && found ? 0 : -1;
-}
-
 /* files of the port's own, never the player's APK or data */
 static inline int ssr_port_file(const char *name) {
   static const char *const own[] = {".nro", ".nsp", ".ini", ".log", ".txt", ".so", ".setup", ".update", ".rgba", ".ttf"};
@@ -230,34 +207,6 @@ static inline int ssr_port_file(const char *name) {
     if (ssr_ends_with(name, own[i]))
       return 1;
   return 0;
-}
-
-/* The APK in folder `dir`, by its contents: game.apk if it is the game's,
- * else any other file there that is (*.apk first, then the rest, as the
- * player may have named it anything). 0 and its path in `out` if found. */
-static inline int ssr_find_apk(const char *dir, char *out, size_t cap) {
-  snprintf(out, cap, "%s/game.apk", dir);
-  if (ssr_apk_probe(out) == 0)
-    return 0;
-  for (int pass = 0; pass < 2; pass++) {
-    DIR *d = opendir(dir);
-    if (!d)
-      return -1;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-      const int apk = ssr_ends_with(e->d_name, ".apk");
-      if ((pass == 0) != apk || ssr_port_file(e->d_name))
-        continue;
-      snprintf(out, cap, "%s/%s", dir, e->d_name);
-      if (ssr_apk_probe(out) == 0) {
-        closedir(d);
-        return 0;
-      }
-    }
-    closedir(d);
-  }
-  out[0] = 0;
-  return -1;
 }
 
 /* The game's data in folder `dir`, by its contents: the APK itself (a

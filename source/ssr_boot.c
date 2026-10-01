@@ -43,20 +43,16 @@
 #include <switch.h>
 
 #include "config.h"
+#include "dcr_boost.h"
 #include "dcr_config.h"
-#include "dcr_time.h"
 #include "error.h"
 #include "gl_layer.h"
 #include "jni.h"
+#include "rt_applet.h"
 #include "ssr.h"
 #include "util.h"
+#include "watchdog.h"
 
-void dcr_watchdog_start(void);
-void dcr_boost_poll(void);
-void dcr_boost_report(void);
-void dcr_boost_launch_end(void);
-void dcr_boost_idle(void);
-void dcr_boost_frame_begin(void);
 void ssr_perf_focus(int focused); /* ssr_perf.c */
 void ssr_perf_exit(void);
 void ssr_perf_frame(u64 run_ticks, u64 present_ticks, unsigned polls);
@@ -131,7 +127,7 @@ static void resolve_natives(void) {
 #define ENV g_jni_env
 
 /* ------------------------------------------------------------ state */
-static volatile int g_exit, g_focused = 1, g_focus_changed, g_started;
+static volatile int g_exit;
 static uint64_t g_frames;
 static int g_engine_up; /* nativeProjectInit has run */
 static int g_released;  /* nativeProjectRun returned 1: the engine has freed itself */
@@ -139,11 +135,10 @@ static int g_released;  /* nativeProjectRun returned 1: the engine has freed its
 void ssr_request_exit(void) { g_exit = 1; }
 uint64_t ssr_frame_count(void) { return g_frames; }
 
-/* the watchdog: frames presented, and whether a stop is expected */
+/* the watchdog: frames presented (whether a stop is expected: rt_applet.c,
+ * with the Switch keyboard's dcr_applet_busy) */
 uint64_t dcr_boot_frames(void) { return dcr_gl_frames(); }
-static volatile int g_system_dialog; /* the Switch keyboard is up (ssr_menu.c): no frames, no hang */
-void ssr_boot_system_dialog(int on) { g_system_dialog = on; }
-int dcr_boot_in_focus(void) { return g_focused && g_started && !g_exit && !g_system_dialog; }
+int port_watchdog_hold(void) { return g_exit; }
 
 /* ------------------------------------------------ the splash (updateLoading) */
 /* DemoRenderer.z: 0 make the views, 1 the loading picture (3 s), 2 it fades,
@@ -256,62 +251,44 @@ static void splash_skip(void) {
 int ssr_boot_splash_active(void) { return !g_sp.done || g_sp.movie; }
 
 /* --------------------------------------------------------- lifecycle */
-static AppletHookCookie g_hook;
-
-static void on_applet(AppletHookType type, void *param) {
-  if (type == AppletHookType_OnExitRequest) {
-    debugPrintf("[applet] the system asked the game to close\n");
-    g_exit = 1;
-  }
-  if (type == AppletHookType_OnFocusState || type == AppletHookType_OnOperationMode) {
-    int focused = appletGetFocusState() == AppletFocusState_InFocus;
-    if (focused != g_focused) {
-      g_focused = focused;
-      g_focus_changed = 1;
-    }
-  }
-}
-
 static void save_state(void) {
   if (g_engine_up && !g_released && N.save_state)
     N.save_state(ENV, g_renderer);
 }
 
-static void apply_focus(void) {
-  if (!g_focus_changed || !g_started)
-    return;
-  g_focus_changed = 0;
-  if (!g_focused) {
-    /* DemoActivity.onPause */
-    debugPrintf("[boot] focus lost: onPause\n");
-    dcr_boost_idle();
-    ssr_perf_focus(0); /* the normal CPU clock for the HOME menu */
-    if (N.mp_disconnect)
-      N.mp_disconnect(ENV, ACT);
-    save_state();
-    if (N.set_pause)
-      N.set_pause(ENV, ACT);
-    ssr_split_focus(0);
-    ssr_input_release_all(); /* DemoGLSurfaceView.b(): the touches cancelled */
-    if (g_sp.movie)
-      ssr_video_skip();
-    ssr_music_pause();
-    ssr_audio_pause(1);
-    log_flush_ring();
-    dcr_time_suspend();
-  } else {
-    /* onResume (the context is still there: no onSurfaceCreated) */
-    ssr_perf_focus(1);
-    dcr_boost_frame_begin();
-    ssr_clock_resync(); /* the time away is no game time */
-    dcr_time_resume();
-    ssr_audio_pause(0);
-    ssr_music_unpause();
-    if (N.resume)
-      N.resume(ENV, g_renderer);
-    ssr_split_focus(1);
-    debugPrintf("[boot] focus regained: onResume\n");
-  }
+/* HOME, sleep (rt_applet.c: the focus messages, at the top of a frame; the
+ * clocks stop after port_focus_lost and run again between gaining and gained) */
+void port_focus_lost(void) {
+  /* DemoActivity.onPause */
+  dcr_boost_idle();
+  ssr_perf_focus(0); /* the normal CPU clock for the HOME menu */
+  int ssr_split_net_active(void); /* ssr_split_net.c */
+  if (N.mp_disconnect && !ssr_split_net_active()) /* (split screen's LAN game is both copies': it stays) */
+    N.mp_disconnect(ENV, ACT);
+  save_state();
+  if (N.set_pause)
+    N.set_pause(ENV, ACT);
+  ssr_split_focus(0);
+  ssr_input_release_all(); /* DemoGLSurfaceView.b(): the touches cancelled */
+  if (g_sp.movie)
+    ssr_video_skip();
+  ssr_music_pause();
+  ssr_audio_pause(1);
+}
+
+void port_focus_gaining(void) {
+  /* onResume (the context is still there: no onSurfaceCreated) */
+  ssr_perf_focus(1);
+  dcr_boost_frame_begin();
+  ssr_clock_resync(); /* the time away is no game time */
+}
+
+void port_focus_gained(void) {
+  ssr_audio_pause(0);
+  ssr_music_unpause();
+  if (N.resume)
+    N.resume(ENV, g_renderer);
+  ssr_split_focus(1);
 }
 
 static void exit_guard(void *arg) {
@@ -422,7 +399,7 @@ static void on_create(void) {
               (unsigned)p->pack_len);
   if (p->pack_off > 0x7fffffffull)
     fatal_error("The game's data starts past 2 GB into %s:\nthe engine cannot seek there.", p->path);
-  N.set_file_system(ENV, ACT, jni_str(p->path), jni_str("/data/data/" DCR_PACKAGE), (jint)p->pack_off,
+  N.set_file_system(ENV, ACT, jni_str(p->path), jni_str("/data/data/" PORT_PACKAGE), (jint)p->pack_off,
                     (jint)p->pack_len);
   N.cfg(ENV, ACT, 5, ssr_language());
   /* Japanese: DemoActivity makes its NoahWrapper (Noah, the offer wall),
@@ -450,6 +427,7 @@ int ssr_boot_run(void) {
   resolve_natives();
   g_render_counter = (volatile uint32_t *)ssr_native("_ZN13SuApplication17ms_uRenderCounterE");
   dcr_watchdog_start();
+  rt_watchdog_add_counter("audio writes", ssr_audio_writes); /* the sound is alive (ssr_audio.c) */
 
   /* ---- System.loadLibrary: JNI_OnLoad ---- */
   fn_onload onload = (fn_onload)ssr_native("JNI_OnLoad");
@@ -475,8 +453,6 @@ int ssr_boot_run(void) {
 
   if (!dcr_config()->splash)
     g_sp.z = 7, g_sp.views = 1; /* straight to the movie */
-  appletHook(&g_hook, on_applet, NULL);
-  g_started = 1;
   debugPrintf("[boot] up; this thread runs the engine's frames now\n");
   log_flush_ring();
 
@@ -486,9 +462,9 @@ int ssr_boot_run(void) {
   int draws = 0; /* DemoRenderer.V: onDrawFrame calls that reached the engine's part */
   u64 run_ticks = 0; /* in nativeProjectRun since the last present (ssr_perf.c) */
   unsigned polls = 0; /* calls since then in which no engine tick was due */
-  while (!g_exit && appletMainLoop()) {
-    apply_focus();
-    if (!g_focused) {
+  while (!g_exit && !rt_exit_requested() && appletMainLoop()) {
+    rt_applet_poll(); /* HOME / sleep: port_focus_lost / _gained above */
+    if (!rt_focused()) {
       svcSleepThread(50000000ll);
       continue;
     }
@@ -551,11 +527,9 @@ int ssr_boot_run(void) {
 
   /* ---- the way out: onPause, onStop, onDestroy ---- */
   log_set_quiet(0);
-  appletUnhook(&g_hook);
+  rt_applet_stop(); /* (the clocks run again if the game ends out of focus) */
   exit_guard_start();
   ssr_perf_exit(); /* the CPU back to its normal clock */
-  if (!g_focused)
-    dcr_time_resume();
   save_state();
   ssr_split_exit();
   if (g_engine_up && !g_released && N.exit)

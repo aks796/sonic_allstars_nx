@@ -1026,7 +1026,7 @@ static struct {
   const void *kb; /* the screen the Switch keyboard was shown for */
 } g_kbd;
 
-void ssr_boot_system_dialog(int on); /* ssr_boot.c: the watchdog knows */
+void dcr_applet_busy(int on); /* rt_applet.c: a system screen is up, no frames expected */
 void ssr_clock_resync(void);         /* ssr_patch.c */
 
 /* the Switch keyboard for the licence name; 1 if a name went in */
@@ -1047,9 +1047,9 @@ static int kbd_switch(uint8_t *kb) {
   swkbdConfigSetInitialText(&k, buf);
   swkbdConfigSetStringLenMax(&k, (u32)max);
   char out[128] = "";
-  ssr_boot_system_dialog(1);
+  dcr_applet_busy(1);
   const Result rc = swkbdShow(&k, out, sizeof out);
-  ssr_boot_system_dialog(0);
+  dcr_applet_busy(0);
   swkbdClose(&k);
   ssr_clock_resync();
   if (R_FAILED(rc))

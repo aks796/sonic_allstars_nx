@@ -16,7 +16,7 @@
 #include "ssr.h"
 #include "util.h"
 
-const char *dcr_game_root(void); /* main.c */
+const char *dcr_game_root(void); /* dcr_path.c */
 
 static SsrPack g_pack;
 static int g_have;
